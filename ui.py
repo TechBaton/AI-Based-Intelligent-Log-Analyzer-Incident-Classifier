@@ -1,10 +1,18 @@
 import streamlit as st
 import pandas as pd
+from collections import defaultdict
 
 from log_parser import parse_logs
-from severity import infer_severity
-from summarizer import incidents  # or re-run logic inline if needed
+from severity import infer_severity, build_incident_index, frequency_boost
+from analytics import (
+    generate_executive_summary,
+    rank_incidents
+)
 
+
+# --------------------------------------------------
+# Page setup
+# --------------------------------------------------
 st.set_page_config(page_title="AI Log Analyzer", layout="wide")
 
 st.title("🧠 AI-Powered Log Analysis System")
@@ -13,7 +21,10 @@ st.write("Upload a log file to analyze incidents, severity, and summaries.")
 # --------------------------------------------------
 # File upload
 # --------------------------------------------------
-uploaded_file = st.file_uploader("Upload log file", type=["log", "txt"])
+uploaded_file = st.file_uploader(
+    "Upload log file",
+    type=["log", "txt"]
+)
 
 if uploaded_file is not None:
     # Save uploaded file temporarily
@@ -27,12 +38,25 @@ if uploaded_file is not None:
     # --------------------------------------------------
     logs = parse_logs("temp.log")
 
-    st.subheader("Parsed Logs Preview")
+    if len(logs) == 0:
+        st.warning("No valid log entries found.")
+        st.stop()
+
     df = pd.DataFrame(logs)
-    st.dataframe(df.head(20))
+
+    st.subheader("📄 Parsed Logs (Preview)")
+    st.dataframe(df.head(30))
+    # --------------------------------------------------
+    # Executive summary
+    # --------------------------------------------------
+    st.subheader("📌 Executive Summary")
+
+    summary = generate_executive_summary(logs)
+    st.info(summary)
+
 
     # --------------------------------------------------
-    # Severity Analysis
+    # Severity analysis
     # --------------------------------------------------
     st.subheader("Severity Classification")
 
@@ -48,31 +72,74 @@ if uploaded_file is not None:
     st.bar_chart(severity_counts)
 
     # --------------------------------------------------
-    # Incident Summary
+    # Incident summaries
     # --------------------------------------------------
-    st.subheader("Incident Summary")
+    st.subheader("🧾 Incident Summaries")
 
-    from collections import defaultdict
+    summary_mode = st.radio(
+        "Choose summary style:",
+        ["Human-readable", "Technical"]
+    )
 
     incident_map = defaultdict(list)
 
     for log in logs:
-        key = (log["service"], log["message"])
+        key = (log["service"], log["clean_message"])
         incident_map[key].append(log["timestamp"])
 
     summaries = []
 
-    for (service, message), timestamps in incident_map.items():
-        if len(timestamps) > 1:
-            summaries.append({
-                "service": service,
-                "count": len(timestamps),
-                "start_time": min(timestamps),
-                "end_time": max(timestamps),
-                "message": message[:100]
-            })
+    for (service, clean_message), timestamps in incident_map.items():
+        count = len(timestamps)
 
-    summary_df = pd.DataFrame(summaries)
-    st.dataframe(summary_df)
+        if count < 2:
+            continue
 
-    st.success("Analysis complete.")
+        start_time = min(timestamps)
+        end_time = max(timestamps)
+
+        if summary_mode == "Human-readable":
+            summary_text = (
+                f"There were {count} similar issues in the {service} service "
+                f"between {start_time} and {end_time}."
+            )
+        else:
+            summary_text = (
+                f"{count} occurrences in {service} "
+                f"between {start_time} and {end_time} | "
+                f"{clean_message[:120]}"
+            )
+
+        summaries.append({
+            "service": service,
+            "count": count,
+            "start_time": start_time,
+            "end_time": end_time,
+            "summary": summary_text
+        })
+
+    if summaries:
+        summary_df = pd.DataFrame(summaries)
+        st.dataframe(summary_df)
+    else:
+        st.info("No repeated incidents detected.")
+     
+    # --------------------------------------------------
+    # 🎯 What Should I Look At First?
+    # --------------------------------------------------
+    st.subheader("🎯 What Should I Look At First?")
+
+    ranked = rank_incidents(logs)
+
+    if ranked:
+        for i, incident in enumerate(ranked[:3], start=1):
+            st.markdown(
+                f"**{i}. {incident['service']}**  \n"
+                f"Occurrences: {incident['frequency']}  \n"
+                f"Last seen: {incident['last_seen']}  \n"
+                f"Message: {incident['message']}"
+            )
+    else:
+        st.info("No significant incidents detected.")
+
+    st.success("✅ Analysis complete.")
